@@ -1,0 +1,164 @@
+repeat task.wait() until game:IsLoaded() and workspace:FindFirstChild("Characters")
+
+local Players = game:GetService("Players")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local StarterGui = game:GetService("StarterGui")
+
+local localPlayer = Players.LocalPlayer
+local playerGui = localPlayer:FindFirstChild("PlayerGui") or localPlayer:WaitForChild("PlayerGui")
+
+local function notify(title, text, duration)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = title,
+            Text = text,
+            Duration = duration or 5
+        })
+    end)
+end
+
+local function loaded()
+    local label = playerGui:FindFirstChild("MoneyValue", true)
+    if not label then return true end
+    return label.Text ~= "loading"
+end
+
+repeat task.wait() until loaded()
+
+notify("Egg Auto Collector", "Script Loaded! Starting farm...", 4)
+
+local spawner = workspace:FindFirstChild("EggSpawner") or workspace:WaitForChild("EggSpawner")
+
+local character = localPlayer.Character or localPlayer.CharacterAdded:Wait()
+local rootPart = character:FindFirstChild("HumanoidRootPart") or character:WaitForChild("HumanoidRootPart")
+
+local gameId = game.PlaceId
+local jobId = game.JobId
+
+local visitedServers = {}
+
+local teleportPoints = {
+    Vector3.new(-1636.2384033203125, 44.214996337890625, -2050.36474609375),
+    Vector3.new(-966.2034301757812, 44.35916519165039, -56.31230545043945),
+    Vector3.new(496.6749267578125, 43.974769592285156, -1496.962890625),
+    Vector3.new(1463.48779296875, 44.0, -899.3243408203125),
+    Vector3.new(-1402.9573974609375, 50.32452392578125, 210.98550415039062),
+    Vector3.new(-321.3824768066406, 48.12521743774414, -2080.9287109375),
+    Vector3.new(700.5416870117188, 43.87519836425781, -315.5935974121094),
+    Vector3.new(-1870.5643310546875, 50.190311431884766, -1150.3544921875),
+    Vector3.new(-568.42138671875, 44.07366943359375, -982.5844116210938),
+    Vector3.new(1260.204833984375, 43.87527084350586, 60.284210205078125)
+}
+
+local function collect()
+    local count = 0
+    for _, egg in spawner:GetChildren() do
+        if egg:IsA("Model") then
+            local mesh = egg:FindFirstChild("Egg") or egg:WaitForChild("Egg")
+            if mesh and mesh.Parent == egg then
+                pcall(function()
+                    firetouchinterest(rootPart, mesh, 1)
+                    firetouchinterest(rootPart, mesh, 0)
+                    count += 1
+                end)
+            end
+        end
+    end
+    notify("Egg Collection", "Collected ~" .. count .. " eggs!", 3)
+end
+
+local function hopChunks()
+    for _, position in ipairs(teleportPoints) do
+        rootPart.CFrame = CFrame.new(position)
+        task.wait(0.6)
+        collect()
+    end
+end
+
+local function quickRetryTeleport(serverId)
+    local success = false
+    local finished = false
+
+    local co = coroutine.create(function()
+        for i = 1, 3 do
+            success = pcall(function()
+                TeleportService:TeleportToPlaceInstance(gameId, serverId, localPlayer)
+            end)
+            if success then
+                finished = true
+                break
+            end
+            task.wait(0.2)
+        end
+    end)
+
+    coroutine.resume(co)
+
+    local timeout = 5
+    local start = tick()
+    repeat task.wait(0.1) until finished or tick() - start > timeout
+
+    return success
+end
+
+local function list(cursor)
+    local url = "https://games.roblox.com/v1/games/" .. gameId .. "/servers/Public?sortOrder=Asc&limit=100"
+    local full = url .. ((cursor and "&cursor=" .. cursor) or "")
+
+    local success, result
+    for i = 1, 3 do
+        success, result = pcall(function()
+            return HttpService:JSONDecode(game:HttpGet(full))
+        end)
+        if success then
+            return result
+        elseif string.find(result, "429") then
+            notify("Rate Limited", "Waiting before retrying...", 2)
+            task.wait(3)
+        else
+            break
+        end
+    end
+
+    return { data = {}, nextPageCursor = nil }
+end
+
+local function getNextServer()
+    local _next = nil
+    while true do
+        local serversData = list(_next)
+        local shuffled = serversData.data
+        for i = #shuffled, 2, -1 do
+            local j = math.random(i)
+            shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+        end
+        for _, s in ipairs(shuffled) do
+            if s.id ~= jobId and not visitedServers[s.id] and s.playing < s.maxPlayers then
+                return s
+            end
+        end
+        _next = serversData.nextPageCursor
+        task.wait(0.25)
+        if not _next then break end
+    end
+    return nil
+end
+
+local function findServerAndHop()
+    local server = getNextServer()
+    if server and server.id then
+        visitedServers[server.id] = true
+        notify("Server Hop", "Teleporting to server...", 2)
+
+        if not quickRetryTeleport(server.id) then
+            notify("Teleport Failed", "Trying another server...", 2)
+            findServerAndHop()
+        end
+    end
+end
+
+while true do
+    hopChunks()
+    findServerAndHop()
+end
